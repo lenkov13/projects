@@ -1,0 +1,268 @@
+---
+title: "DSCI_Final_Project"
+author: "Daniil Lenkov"
+date: '2022-05-04'
+output: html_document
+---
+Let's import all necessary libraries
+```{r}
+#import of all libraries
+
+library(tidyverse)
+
+library(ggplot2)
+library(ggthemes)
+library(ggExtra)
+library(ggalluvial)
+
+library(alluvial)
+library(magrittr)
+
+library(cluster)
+library(factoextra)
+
+library(modelr)
+```
+
+
+# General trend of production and consumption of gas for the Europe 
+
+First, we need to read and clean the data  
+
+```{r}
+# Consumption of gas in Europe for the last 50 years
+
+df_gas_cons <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/gas_cons.csv')
+
+df_gas_cons %<>% filter(Region %in% c('Total Europe')) %>%
+  t(.) %>%
+  as.double(.) %>%
+  replace(is.na(.), 30) %>%
+  tail(.,-5)
+
+# Production of gas in Europe for the last 50 years
+df_gas_prod <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/gas_prod.csv')
+
+df_gas_prod %<>% filter(Region %in% c('Total Europe')) %>%
+  t(.) %>%
+  as.double(.) %>%
+  replace(is.na(.), 100)
+
+df_gas_prod_cons <- tibble(x = df_gas_prod, y = df_gas_cons)
+df_gas_prod_cons
+```
+
+Now we can draw scatter plot. 
+I wanted to pay special attention to the right concentration of plot:
+*consumption stays the same despite the production change*
+
+```{r}
+ggplot(df_gas_prod_cons, aes(x=x, 
+                             y=y)) +
+  geom_point() +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5)) + 
+  labs(x = 'Production',
+       y = 'Consumption',
+       title = 'Total Europe Gas Production and Consumption')
+```
+
+Trying to approximate this trend (which is a bit naive) I applied polynominal 
+regression model
+
+```{r}
+#polynominal model
+mod1 <- df_gas_prod_cons %>% 
+  lm(formula =y ~ poly(x, 10))
+summary(mod1)
+
+#predicted values
+grid <-  df_gas_prod_cons %>% 
+  data_grid(x) %>% 
+  gather_predictions(mod1)
+```
+
+And finally we can plot this model at the same chart
+Right side is more flat, and it says about 
+**critical need of Europe to substitute gas supplies to save a consumption**
+
+```{r}
+ggplot(df_gas_prod_cons, aes(x, y)) + 
+  geom_point() + 
+  geom_line(data = grid, aes(y = pred)) +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5)) + 
+  labs(x = 'Production',
+       y = 'Consumption',
+       title = 'Total Europe Gas Production and Consumption')
+```
+
+# Alluvium plot for import and production of gas by country in europe
+
+It's the most comprehensive dataset about energy in Europe
+```{r}
+#read the simplified energy balance file
+df <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/nrg_bal_s_linear.csv')
+
+dim(df)
+```
+
+Let's sort the data according to the conditions below 
+
+Time Period = 2020
+
+C0000X0350-0370 = *Solid fossil fuels* \
+G3000 = *Natural gas* \
+O4000XBIO = *Oil and petroleum products (excluding biofuel portion)* \
+N900H = *Nuclear heat* \
+RA000 = *Renewables and biofuels* \
+
+Germany, UK, France, Italy, Spain, Portages, Netherlands, Poland, Sweden,
+Belgium, Ireland
+
+```{r}
+eu_2020 <-df %>% filter(TIME_PERIOD == '2020',
+                        siec %in% c('C0000X0350-0370',
+                                    'G3000',
+                                    'O4000XBIO',
+                                    'N900H',
+                                    'RA000'),
+                        geo %in% c('DE','UK','FR',
+                                   'IT','ES','NL',
+                                   'PL','SE','BE','IE')) %>%
+  select(c('geo','nrg_bal','siec','OBS_VALUE'))
+
+imp <- eu_2020 %>% filter(nrg_bal == 'IMP')
+prod <- eu_2020 %>% filter(nrg_bal == 'PPRD') 
+
+s <- rbind(imp,prod) %>%
+  select(geo,nrg_bal,siec,OBS_VALUE) %>%
+  replace(is.na(.), 0)
+
+head(s)
+```
+
+Quick test for compabiltiy with Alluvium plot
+```{r}
+is_alluvia_form(s, axes = 1:4, silent = TRUE)
+```
+
+And here is the Alluvium plot
+Major economics of EU import majority of energy resourses
+```{r}
+ggplot(s,
+       aes(y = OBS_VALUE, axis1 = nrg_bal, axis2 = geo)) +
+  geom_alluvium(aes(fill = siec), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "black", color = "grey") +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Total Energy", "EU Country"), expand = c(.05, .05)) +
+  theme_classic() +
+  labs(y = 'GWH',
+       title = 'European Reliance on Russian Gas Imports and on Gas for Energy, 2020') 
+```
+
+# Alluvium plot for import and production of gas by country in europe
+Again, for the beginning we need to import, clean and transform the data
+```{r}
+
+#Import of natural gas by partner (Russia in this case) 
+
+#1 MIO_M3 = 10,277,778 KWH = 10.277778 GWT hours 
+#1 GWH = 1,000,000 KWH
+
+df_gas <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/nrg_ti_gas__custom.csv')
+df_gas_rus_2020 <- df_gas %>% 
+  filter(TIME_PERIOD == '2020',
+         siec == 'G3000') %>%
+  mutate(gas_russia_gwh = OBS_VALUE*10.277778) %>%
+  select(c(geo,gas_russia_gwh)) 
+
+#Consumption of natural gas
+df_gas_cons <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/nrg_cb_gas__custom.csv')
+df_gas_cons_2020 <- df_gas_cons%>% 
+  filter(TIME_PERIOD == '2020') %>%
+  mutate(total_gas_cons = OBS_VALUE*10.277778) %>%
+  select(c(geo,total_gas_cons)) 
+
+#Gross inlang consumption of all energy, GWH
+gic <- df %>%filter(nrg_bal == 'GIC',
+                    TIME_PERIOD =='2020',
+                    unit == 'GWH',
+                    siec != 'TOTAL') %>%
+  select(geo,OBS_VALUE)
+
+gic %<>% group_by(geo) %>%
+  summarize(total_energy_cons = sum(OBS_VALUE))
+
+#Unite df
+df_gas_cluster <- left_join(gic,df_gas_cons_2020,by = 'geo') %>%
+  left_join(.,df_gas_rus_2020,by = 'geo')
+
+df_gas_cluster
+```
+
+GDP parameter will be used futher for plotting 
+```{r}
+#GDP size of European Countries 
+gdp <- read.csv(file = 'C:/Users/Даниил/Desktop/DS_Europe_energy/gdp.csv')
+gdp %<>% rename(geo = ABBR)
+head(gdp)
+```
+
+Calculation of ratios
+```{r}
+df_gas_cluster['share_rus_gas'] <- df_gas_cluster['gas_russia_gwh']/df_gas_cluster['total_gas_cons'] %>%
+  replace(is.na(.), 0)
+
+df_gas_cluster['share_gas_total'] <- df_gas_cluster['total_gas_cons']/df_gas_cluster['total_energy_cons'] %>%
+  replace(is.na(.), 0)
+
+df_gas_cluster  %<>%
+  na.omit(share_rus_gas, share_gas_total) %>%
+  filter(geo != 'EU27_2020',
+         geo != 'EA19') %>%
+  left_join(gdp,by = 'geo') %>%
+  na.omit()
+
+head(df_gas_cluster)
+```
+
+Creating separate df for clustering
+```{r}
+#Selected columns for clustering
+df_gas_cluster1 <- df_gas_cluster %>%
+  select(share_rus_gas, share_gas_total)
+
+k2 <- kmeans(df_gas_cluster1, centers = 3)
+k2
+```
+
+And finally we can plot our clusters
+Here we can see that such economies as GE,IT,NL have great need in Russian 
+gas import
+```{r}
+GDP_size = df_gas_cluster$GDP
+Cluster = factor(k2$cluster)
+
+ggplot(df_gas_cluster, aes(x=share_rus_gas, 
+                                       y=share_gas_total, 
+                                       color = Cluster,
+                                       label = geo,
+                                       size = GDP_size)) +
+  geom_point() +
+  geom_label() +
+  theme_classic() + 
+  geom_vline(aes(xintercept = 0.4),size=0.5) +
+  geom_hline(aes(yintercept = 0.264),size=0.5) +
+  theme(panel.border = element_rect(colour = "black", 
+                                    fill=NA, 
+                                    size=0.5)) + 
+  labs(x = 'Share of Russian gus in gas consumption',
+       y = 'Share of gas consumtion in total energy consumption',
+       title = 'European Reliance on Russian Gas Imports and on Gas for Energy, 2020')
+
+```
